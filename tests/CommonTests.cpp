@@ -1,5 +1,6 @@
 #include "FileTimeTestUtil.h"
 #include "common/assert.h"
+#include "common/cacheTopology.h"
 #include "common/config.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
@@ -21,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -297,6 +299,76 @@ TEST(Thread, SleepsAtLeastTheRequestedTimeAndIdsAreUniquePerThread) {
 	}).join();
 	EXPECT_NE(other_id, id);
 	EXPECT_FALSE(other_main);
+}
+
+TEST(CacheTopology, ParsesSysfsCpuListsAndCacheSizes) {
+	EXPECT_EQ(Common::ParseCpuList("0-3,16-17\n"), (std::vector<int> {0, 1, 2, 3, 16, 17}));
+	EXPECT_EQ(Common::ParseCpuList("5"), (std::vector<int> {5}));
+	EXPECT_TRUE(Common::ParseCpuList("").empty());
+	EXPECT_TRUE(Common::ParseCpuList("4-2").empty());
+	EXPECT_TRUE(Common::ParseCpuList("0-x").empty());
+	EXPECT_TRUE(Common::ParseCpuList("-1").empty());
+
+	EXPECT_EQ(Common::ParseCacheSize("98304K\n"), uint64_t {96} << 20u);
+	EXPECT_EQ(Common::ParseCacheSize("32M"), uint64_t {32} << 20u);
+	EXPECT_EQ(Common::ParseCacheSize("512"), 512u);
+	EXPECT_EQ(Common::ParseCacheSize("K"), 0u);
+	EXPECT_EQ(Common::ParseCacheSize("8X"), 0u);
+}
+
+// A fake /sys/devices/system/cpu of a Ryzen 9 with two CCDs: CPUs 0-7 and their SMT siblings
+// 16-23 share one L3, CPUs 8-15 and 24-31 the other.
+std::filesystem::path WriteTwoCcdCpuTree(std::string_view first_l3, std::string_view second_l3) {
+	const auto      root = std::filesystem::temp_directory_path() / "kyty_cache_topology_test";
+	std::error_code ec;
+	std::filesystem::remove_all(root, ec);
+	const auto write = [](const std::filesystem::path& path, std::string_view text) {
+		std::filesystem::create_directories(path.parent_path());
+		std::ofstream(path) << text << '\n';
+	};
+	for (int cpu = 0; cpu < 32; cpu++) {
+		const auto cache  = root / ("cpu" + std::to_string(cpu)) / "cache";
+		const auto core   = cpu % 16;
+		const bool first  = core < 8;
+		const auto shared = std::to_string(core) + "," + std::to_string(core + 16);
+		write(cache / "index0" / "level", "1");
+		write(cache / "index0" / "size", "32K");
+		write(cache / "index0" / "shared_cpu_list", shared);
+		write(cache / "index2" / "level", "2");
+		write(cache / "index2" / "size", "1024K");
+		write(cache / "index2" / "shared_cpu_list", shared);
+		write(cache / "index3" / "level", "3");
+		write(cache / "index3" / "size", first ? first_l3 : second_l3);
+		write(cache / "index3" / "shared_cpu_list", first ? "0-7,16-23" : "8-15,24-31");
+	}
+	// Entries that are not CPUs.
+	write(root / "cpufreq" / "boost", "1");
+	write(root / "cpuidle" / "current_driver", "acpi_idle");
+	write(root / "online", "0-31");
+	return root;
+}
+
+TEST(CacheTopology, LargestCacheCpusAreThoseOfTheLargestLastLevelCache) {
+	const std::vector<int> first_ccd {0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23};
+	const std::vector<int> second_ccd {8,  9,  10, 11, 12, 13, 14, 15,
+	                                   24, 25, 26, 27, 28, 29, 30, 31};
+
+	// Ryzen 9 7950X3D: the 3D V-Cache (96 MiB) is on the first CCD.
+	auto root = WriteTwoCcdCpuTree("98304K", "32768K");
+	EXPECT_EQ(Common::LargestCacheCpus(root), first_ccd);
+
+	// The 3D V-Cache on the other CCD.
+	root = WriteTwoCcdCpuTree("32768K", "98304K");
+	EXPECT_EQ(Common::LargestCacheCpus(root), second_ccd);
+
+	// Ryzen 9 7950X: two equal L3s, the one of CPU 0.
+	root = WriteTwoCcdCpuTree("32768K", "32768K");
+	EXPECT_EQ(Common::LargestCacheCpus(root), first_ccd);
+
+	// No cache information (some virtual machines): nothing to keep to.
+	std::error_code ec;
+	std::filesystem::remove_all(root, ec);
+	EXPECT_TRUE(Common::LargestCacheCpus(root).empty());
 }
 
 } // namespace

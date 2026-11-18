@@ -247,7 +247,8 @@ uint32_t ParseGpuPipelineStages(const char* value);
 
 // Threads of a pipelined GPU. KYTY_GPU_THREAD_CPUS lists the logical processors the command
 // processor, execution, recording, resolve, host copy and resolve helper threads are pinned to
-// ("off" leaves them unpinned); KYTY_GPU_THREAD_PRIORITY=0 keeps their normal priority.
+// ("off" leaves them unpinned); KYTY_GPU_THREAD_PRIORITY=0 keeps their normal priority. On Linux,
+// without a list, they keep to the processors that share the largest last-level cache.
 enum class GpuStageThread : uint32_t {
 	CommandProcessor = 0,
 	Execution        = 1,

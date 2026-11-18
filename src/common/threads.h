@@ -40,6 +40,11 @@ void ReserveCores(std::span<const int> logical_cpus);
 // Whether the calling thread pinned itself (PinCurrent) to a processor of the cores
 // ReserveCores() keeps the other threads off: it runs alone there.
 bool HasReservedCore();
+// Current thread: restricts it to the logical processors it may run on that share the largest
+// last-level cache (on a Ryzen X3D, the CCD with the 3D V-Cache), so that threads which hand work
+// to each other keep their data in one cache. The threads it starts afterwards inherit that set.
+// Linux only; a no-op elsewhere, and where that cache spans every processor the thread may use.
+void KeepCurrentOnLargestCache();
 
 } // namespace Thread
 

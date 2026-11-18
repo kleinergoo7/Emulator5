@@ -360,6 +360,20 @@ void ConfigureGpuStageThread(GpuStageThread stage) {
 	if (high_priority) {
 		Common::Thread::RaiseCurrentPriority();
 	}
+#if defined(__linux__)
+	// The default list numbers the processors as Windows does, SMT siblings adjacent; Linux numbers
+	// the siblings of core n as n and n + cores, so the list would spread the stages over both CCDs
+	// of a Ryzen 9. Without a list of their own, the stages keep to the processors of the largest
+	// last-level cache instead, with no core reserved: the guest keeps every processor.
+	static const bool listed = [] {
+		const char* value = std::getenv("KYTY_GPU_THREAD_CPUS");
+		return value != nullptr && *value != '\0';
+	}();
+	if (!listed) {
+		Common::Thread::KeepCurrentOnLargestCache();
+		return;
+	}
+#endif
 	// Guest threads that spin while they wait for work (Demon's Souls keeps ~12 job workers at
 	// ~95% of a core each) otherwise run on the SMT siblings of the pinned stages and slow them
 	// down: give the stages whole physical cores.
