@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
-    # KytyPS5-GTA: pushing a v* tag (v1, v2, ...) publishes a fork release.
+    # Pushing a v* tag publishes a versioned release in whatever repository this runs in.
     tags: [ 'v*' ]
   pull_request:
 
@@ -14,8 +14,12 @@ concurrency:
 
 env:
   SCCACHE_GHA_ENABLED: "true"
-  KYTY_BUILD_ORIGIN: ${{ github.repository != 'KytyPS5/KytyPS5' && 'Fork' || github.event_name == 'push' && 'Official' || 'Source' }}
+  # No repository name is hardcoded: builds are fork-style by default in any repository.
+  # Set a repository variable KYTY_BUILD_ORIGIN=Official on an official repository if wanted.
+  KYTY_BUILD_ORIGIN: ${{ vars.KYTY_BUILD_ORIGIN || 'Fork' }}
   KYTY_BUILD_REPOSITORY: ${{ github.repository }}
+  # Artifact and release names follow the repository instead of a fixed product name.
+  REPO_NAME: ${{ github.event.repository.name }}
 
 jobs:
   metadata:
@@ -29,10 +33,11 @@ jobs:
         id: release_tag
         shell: bash
         run: |
-          if [[ "$GITHUB_REPOSITORY" != "KytyPS5/KytyPS5" && "$GITHUB_REF_TYPE" == "tag" ]]; then
-            echo "value=KytyPS5-GTA-$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          repo_name="${GITHUB_REPOSITORY##*/}"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "value=$repo_name-$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
           else
-            echo "value=KytyPS5-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "value=$repo_name-$(date -u +'%Y-%m-%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
   windows:
@@ -179,7 +184,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Windows-x64
+          name: ${{ env.REPO_NAME }}-Windows-x64
           path: _Build/windows/install/**
           if-no-files-found: error
 
@@ -325,7 +330,7 @@ jobs:
         shell: bash
         run: |
           install_dir="_Build/macos/install"
-          archive="$RUNNER_TEMP/KytyPS5-macOS-x86_64.zip"
+          archive="$RUNNER_TEMP/$REPO_NAME-macOS-x86_64.zip"
           (
             cd "$install_dir"
             zip -qry "$archive" .
@@ -335,8 +340,8 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-macOS-x86_64
-          path: ${{ runner.temp }}/KytyPS5-macOS-x86_64.zip
+          name: ${{ env.REPO_NAME }}-macOS-x86_64
+          path: ${{ runner.temp }}/${{ env.REPO_NAME }}-macOS-x86_64.zip
           if-no-files-found: error
 
   linux:
@@ -479,17 +484,20 @@ jobs:
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KytyPS5-Linux-x86_64
+          name: ${{ env.REPO_NAME }}-Linux-x86_64
           path: _Build/linux/install/**
           if-no-files-found: error
 
   release:
-    name: Release KytyPS5
+    name: Release ${{ github.event.repository.name }}
+    # Release on every push to main/master (and on v* tags), in any repository,
+    # as soon as at least one platform build succeeded.
     if: >-
       always() &&
       github.event_name == 'push' &&
-      ((github.repository == 'KytyPS5/KytyPS5' && github.ref_type == 'branch') ||
-       (github.repository != 'KytyPS5/KytyPS5' && startsWith(github.ref, 'refs/tags/v'))) &&
+      (github.ref_type == 'tag' ||
+       github.ref == 'refs/heads/main' ||
+       github.ref == 'refs/heads/master') &&
       (needs.windows.result == 'success' ||
        needs.macos.result == 'success' ||
        needs.linux.result == 'success')
@@ -499,7 +507,7 @@ jobs:
       contents: write
     env:
       RELEASE_NAME: ${{ needs.metadata.outputs.release_tag }}
-      # Fork releases attach to the pushed v* tag; official ones create a dated tag.
+      # Tagged pushes attach to the pushed tag; branch pushes use the generated tag.
       RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || needs.metadata.outputs.release_tag }}
 
     steps:
@@ -507,28 +515,28 @@ jobs:
         if: needs.windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
-          name: KytyPS5-Windows-x64
-          path: artifacts/KytyPS5-Windows-x64
+          name: ${{ env.REPO_NAME }}-Windows-x64
+          path: artifacts/${{ env.REPO_NAME }}-Windows-x64
 
       - name: Download macOS build
         if: needs.macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
-          name: KytyPS5-macOS-x86_64
-          path: artifacts/KytyPS5-macOS-x86_64
+          name: ${{ env.REPO_NAME }}-macOS-x86_64
+          path: artifacts/${{ env.REPO_NAME }}-macOS-x86_64
 
       - name: Download Linux build
         if: needs.linux.result == 'success'
         uses: actions/download-artifact@v4
         with:
-          name: KytyPS5-Linux-x86_64
-          path: artifacts/KytyPS5-Linux-x86_64
+          name: ${{ env.REPO_NAME }}-Linux-x86_64
+          path: artifacts/${{ env.REPO_NAME }}-Linux-x86_64
 
       - name: Package Windows build
         if: needs.windows.result == 'success'
         shell: bash
         run: |
-          windows_dir="artifacts/KytyPS5-Windows-x64"
+          windows_dir="artifacts/$REPO_NAME-Windows-x64"
           test -d "$windows_dir"
           (
             cd "$windows_dir"
@@ -539,7 +547,7 @@ jobs:
         if: needs.macos.result == 'success'
         shell: bash
         run: |
-          macos_archive="artifacts/KytyPS5-macOS-x86_64/KytyPS5-macOS-x86_64.zip"
+          macos_archive="artifacts/$REPO_NAME-macOS-x86_64/$REPO_NAME-macOS-x86_64.zip"
           test -f "$macos_archive"
           cp "$macos_archive" "$RELEASE_NAME-macOS-x86_64.zip"
 
@@ -547,7 +555,7 @@ jobs:
         if: needs.linux.result == 'success'
         shell: bash
         run: |
-          linux_dir="artifacts/KytyPS5-Linux-x86_64"
+          linux_dir="artifacts/$REPO_NAME-Linux-x86_64"
           test -d "$linux_dir"
           chmod a+x \
             "$linux_dir/kyty_launcher" \
